@@ -1,10 +1,32 @@
+#include "SDL2/SDL_events.h"
+#include <stdbool.h>
 #define CLAY_IMPLEMENTATION
 #include "renderer/renderer.h"
+#include <stdio.h>
+#include <stdlib.h>
+
+// 跨平台控制台编码设置
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+// 跨平台设置控制台UTF-8编码的函数
+void SetConsoleUTF8() {
+#ifdef _WIN32
+  // Windows平台: 使用Windows API设置代码页
+  SetConsoleOutputCP(CP_UTF8);
+  SetConsoleCP(CP_UTF8);
+#else
+  // 非Windows平台: 设置环境变量
+  // 大多数现代Unix系统默认使用UTF-8，但为了确保，我们设置环境变量
+  setenv("LC_ALL", "C.UTF-8", 1);
+  setenv("LANG", "C.UTF-8", 1);
+#endif
+}
 
 // 错误处理函数
 void HandleClayErrors(Clay_ErrorData errorData) {
@@ -18,6 +40,27 @@ const Clay_Color ACCENT_COLOR = {220, 20, 60, 255};       // Crimson
 const Clay_Color BACKGROUND_COLOR = {245, 245, 245, 255}; // White Smoke
 const Clay_Color CARD_COLOR = {255, 255, 255, 255};       // White
 const Clay_Color TEXT_COLOR = {51, 51, 51, 255};          // Dark Gray
+
+// 定义按钮点击回调函数类型
+
+// typedef struct {
+// } ClickEvent;
+typedef void (*ButtonClickListener)(void);
+typedef struct {
+  Clay_String text;
+  Clay_Color backgroundColor;
+  Clay_ElementId buttonId;
+  ButtonClickListener on_click;
+} ButtonData;
+
+Clay_Color DarkenColor(Clay_Color color, float factor) {
+  Clay_Color darkColor;
+  darkColor.r = color.r * factor;
+  darkColor.g = color.g * factor;
+  darkColor.b = color.b * factor;
+  darkColor.a = color.a;
+  return darkColor;
+}
 
 // 定义组件
 void CardComponent(Clay_String title, Clay_String content) {
@@ -43,12 +86,46 @@ void CardComponent(Clay_String title, Clay_String content) {
   }
 }
 
-void ButtonComponent(Clay_String text, Clay_Color backgroundColor) {
+void ButtonComponent(ButtonData *data) {
+  Clay_String text = data->text;
+  Clay_Color backgroundColor = data->backgroundColor;
+  Clay_ElementId buttonId = data->buttonId;
+  ButtonClickListener on_click = data->on_click;
+
+  // 使用静态变量存储点击状态
+  static Clay_ElementId lastPressedId = {0};
+  static bool isClicked = false;
+
+  // Down
+  bool isPressed =
+      Clay_PointerOver(buttonId) &&
+      Clay_GetCurrentContext()->pointerInfo.state == CLAY_POINTER_DATA_PRESSED;
+
+  // Up
+  bool isReleased =
+      Clay_PointerOver(buttonId) &&
+      Clay_GetCurrentContext()->pointerInfo.state == CLAY_POINTER_DATA_RELEASED;
+
+  // 根据按钮状态选择颜色
+  Clay_Color buttonColor =
+      isPressed ? DarkenColor(backgroundColor, 0.7f) : backgroundColor;
+  if (isPressed && on_click != NULL && !isClicked) {
+    on_click();
+    isClicked = true;
+    lastPressedId = buttonId;
+  }
+
+  if (isReleased && lastPressedId.id == buttonId.id) {
+    isClicked = false;
+    lastPressedId = (Clay_ElementId){0};
+  }
+
   CLAY(
-      {.layout = {.sizing = {CLAY_SIZING_FIXED(120), CLAY_SIZING_FIXED(40)},
+      {.id = buttonId,
+       .layout = {.sizing = {CLAY_SIZING_FIXED(120), CLAY_SIZING_FIXED(40)},
                   .padding = CLAY_PADDING_ALL(10),
                   .childAlignment = {CLAY_ALIGN_X_CENTER, CLAY_ALIGN_Y_CENTER}},
-       .backgroundColor = backgroundColor,
+       .backgroundColor = buttonColor,
        .cornerRadius = CLAY_CORNER_RADIUS(6)}) {
     CLAY_TEXT(text, CLAY_TEXT_CONFIG({.fontId = 0,
                                       .fontSize = 14,
@@ -183,9 +260,16 @@ TTF_Font *LoadChineseFont(int fontSize) {
   return font;
 }
 
+// Event Callback
+static void onPrimaryButtonClick() { printf("点击了主要按钮\n"); }
+
+static void onSecondaryButtonClick() { printf("点击了次要按钮\n"); }
+
+static void onAccentButtonClick() { printf("点击了强调按钮\n"); }
+
 int main(int argc, char *argv[]) {
-  SetConsoleOutputCP(CP_UTF8);
-  SetConsoleCP(CP_UTF8);
+  // 跨平台设置控制台编码为UTF-8
+  SetConsoleUTF8();
 
   // 1. 初始化SDL2
   if (SDL_Init(SDL_INIT_VIDEO) < 0) {
@@ -261,38 +345,22 @@ int main(int argc, char *argv[]) {
   // 优先加载支持中文的字体
   font = LoadChineseFont(16);
 
-  // 如果中文字体加载失败，尝试获取系统默认字体
-  if (!font) {
-    HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-    if (hFont) {
-      LOGFONT lf;
-      if (GetObject(hFont, sizeof(LOGFONT), &lf)) {
-        char fontName[LF_FACESIZE];
-        // 将wchar_t转换为char
-        WideCharToMultiByte(CP_UTF8, 0, (LPCWCH)lf.lfFaceName, -1, fontName,
-                            LF_FACESIZE, NULL, NULL);
-        printf("系统默认字体: %s\n", fontName);
-
-        // 构造可能的字体文件路径
-        char fontPath[512];
-        snprintf(fontPath, sizeof(fontPath), "C:\\Windows\\Fonts\\%s.ttf",
-                 fontName);
-        font = TTF_OpenFont(fontPath, 16);
-
-        if (!font) {
-          // 尝试.ttc扩展名
-          snprintf(fontPath, sizeof(fontPath), "C:\\Windows\\Fonts\\%s.ttc",
-                   fontName);
-          font = TTF_OpenFont(fontPath, 16);
-        }
-      }
-    }
-  }
-
   // 如果所有字体都加载失败，尝试常用字体
   if (!font) {
-    const char *fallbackFonts[] = {"C:\\Windows\\Fonts\\arial.ttf", // Arial
-                                   NULL};
+    const char *fallbackFonts[] = {
+#ifdef _WIN32
+        "C:\\Windows\\Fonts\\arial.ttf", // Windows Arial
+#elif defined(__APPLE__)
+        "/System/Library/Fonts/Arial.ttf",     // macOS Arial
+        "/System/Library/Fonts/Helvetica.ttc", // macOS Helvetica
+#else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", // Linux DejaVu
+        "/usr/share/fonts/truetype/liberation/LiberationSans.ttf", // Linux
+                                                                   // Liberation
+        "/usr/share/fonts/TTF/arial.ttf",                          // Arch Linux
+#endif
+        "arial.ttf", // Relative path fallback
+        NULL};
 
     // 尝试加载系统字体
     for (int i = 0; fallbackFonts[i] != NULL && font == NULL; i++) {
@@ -345,7 +413,6 @@ int main(int argc, char *argv[]) {
       case SDL_WINDOWEVENT:
         if (event.window.event == SDL_WINDOWEVENT_RESIZED ||
             event.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
-          SDL_Log("Window event: %d\n", event.window.event);
           windowWidth = event.window.data1;
           windowHeight = event.window.data2;
           // 更新Clay的布局尺寸
@@ -366,6 +433,11 @@ int main(int argc, char *argv[]) {
 
     // 开始布局
     Clay_BeginLayout();
+
+    // Button ID 用于处理事件
+    Clay_ElementId primaryButtonId = CLAY_ID("PrimaryButton");
+    Clay_ElementId secondaryButtonId = CLAY_ID("SecondaryButton");
+    Clay_ElementId accentButtonId = CLAY_ID("AccentButton");
 
     // 定义UI
     CLAY({.id = CLAY_ID("MainContainer"),
@@ -389,9 +461,19 @@ int main(int argc, char *argv[]) {
                          .childGap = 15,
                          .childAlignment = {CLAY_ALIGN_X_LEFT,
                                             CLAY_ALIGN_Y_CENTER}}}) {
-          ButtonComponent(CLAY_STRING("主要按钮"), PRIMARY_COLOR);
-          ButtonComponent(CLAY_STRING("次要按钮"), SECONDARY_COLOR);
-          ButtonComponent(CLAY_STRING("强调按钮"), ACCENT_COLOR);
+
+          ButtonComponent(&(ButtonData){.text = CLAY_STRING("主要按钮"),
+                                        .backgroundColor = PRIMARY_COLOR,
+                                        .buttonId = primaryButtonId,
+                                        .on_click = onPrimaryButtonClick});
+          ButtonComponent(&(ButtonData){.text = CLAY_STRING("次要按钮"),
+                                        .backgroundColor = SECONDARY_COLOR,
+                                        .buttonId = secondaryButtonId,
+                                        .on_click = onSecondaryButtonClick});
+          ButtonComponent(&(ButtonData){.text = CLAY_STRING("强调按钮"),
+                                        .backgroundColor = ACCENT_COLOR,
+                                        .buttonId = accentButtonId,
+                                        .on_click = onAccentButtonClick});
         }
 
         // 信息区域
